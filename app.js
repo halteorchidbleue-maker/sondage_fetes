@@ -182,7 +182,20 @@
     if (!pendingNonce||!pendingData||!serverOriginAllowed(event.origin)) return;
     if (!event.data||event.data.type!=='orchidbleue-survey-result'||event.data.nonce!==pendingNonce) return;
     window.clearTimeout(submitTimer);pendingNonce=null;setSubmitting(false);
-    if (event.data.ok!==true) { pendingData=null;setError('Votre réponse n’a pas pu être confirmée. Veuillez réessayer ou contacter l’organisme.');return; }
+    if (event.data.ok!==true) {
+      pendingData=null;
+      const hints={
+        TABLEUR:'Le tableau de réception n’est pas initialisé. L’organisme doit exécuter initialiserSondage dans Apps Script.',
+        COLONNES:'Les colonnes du tableau ne sont pas à jour. L’organisme doit exécuter initialiserSondage dans Apps Script.',
+        DATES:'Une date demandée est refusée par le serveur. Le calendrier et le script doivent être mis à jour ensemble.',
+        VALIDATION:'Certains renseignements ont été refusés par le serveur. Vérifiez les champs et réessayez.',
+        ACCES:'Le script n’a pas les autorisations nécessaires pour écrire dans Google Sheets.',
+        SERVEUR:'Le serveur Google Sheets a rencontré une erreur. Consultez le journal « Exécutions » dans Apps Script.'
+      };
+      const code=String(event.data.code||'');
+      setError(hints[code]||'Votre réponse n’a pas pu être confirmée. Contactez l’organisme avant de réessayer.');
+      return;
+    }
     rememberSuccess(pendingData);lastSubmission=pendingData;pendingData=null;renderSuccess(false);
     changeStage('success');
   }

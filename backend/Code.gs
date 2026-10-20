@@ -19,7 +19,9 @@ const ENTETES = ['Identifiant de réponse','Dernière modification','Personne re
 
 function initialiserSondage() {
   const classeur = obtenirClasseur_();
-  preparerFeuilleReponses_(classeur);
+  // Conserve les anciennes réponses dans un onglet archivé si les colonnes ont changé.
+  const feuilleReponses = preparerFeuilleReponses_(classeur, true);
+  normaliserAucunBesoin_(feuilleReponses);
   let bilan = classeur.getSheetByName(NOM_FEUILLE_BILAN);
   if (!bilan) bilan = classeur.insertSheet(NOM_FEUILLE_BILAN);
   bilan.getRange('A1:C1').breakApart();
@@ -29,16 +31,16 @@ function initialiserSondage() {
   bilan.getRange('A1:C1').setBackground('#245e80').setFontColor('white').setFontSize(14).setFontWeight('bold');
   bilan.setRowHeight(1,44);
   bilan.getRange('A2').setValue('Réponses reçues');
-  bilan.getRange('B2').setFormula("=MAX(COUNTA('Réponses'!A2:A),0)");
+  bilan.getRange('B2').setFormula("=COUNTA('Réponses'!A2:A)");
   bilan.getRange('A3').setValue('Sans besoin de service');
-  bilan.getRange('B3').setFormula("=COUNTIF('Réponses'!E2:E,TRUE)");
+  bilan.getRange('B3').setFormula("=SUM('Réponses'!E2:E)");
   bilan.getRange('A5:C5').setValues([['JOUR','BESOINS EXPRIMÉS','STATUT']]);
   bilan.getRange('A5:C5').setBackground('#deedf3').setFontColor('#245e80').setFontWeight('bold');
   JOURS_OUVERTS.forEach(function(jour,index){
     const ligne=6+index;
     const colonne=lettreColonne_(7+index);
     bilan.getRange(ligne,1).setValue(jour[1]);
-    bilan.getRange(ligne,2).setFormula("=COUNTIF('Réponses'!"+colonne+'2:'+colonne+',1)');
+    bilan.getRange(ligne,2).setFormula("=SUM('Réponses'!"+colonne+'2:'+colonne+')');
     bilan.getRange(ligne,3).setValue('Offert');
     if(index%2===1) bilan.getRange(ligne,1,1,3).setBackground('#f1f7f9');
   });
@@ -82,10 +84,12 @@ function doPost(e) {
     const verrou=LockService.getScriptLock();
     verrou.waitLock(15000);
     try {
-      const feuille=preparerFeuilleReponses_(obtenirClasseur_());
+      // Si une ancienne structure de feuille existe encore, on l'archive
+      // automatiquement au lieu de refuser la réponse.
+      const feuille=preparerFeuilleReponses_(obtenirClasseur_(), true);
       const dates=new Set(payload.dates);
       const ligne=[payload.id,new Date(),pourFeuille_(responsable),pourFeuille_(participant),
-        payload.aucunBesoin,payload.dates.join(', ')]
+        payload.aucunBesoin?1:0,payload.dates.join(', ')]
         .concat(JOURS_OUVERTS.map(function(j){return dates.has(j[0])?1:0;}));
       const total=feuille.getLastRow();
       let cible=-1;
@@ -97,10 +101,10 @@ function doPost(e) {
       else feuille.getRange(cible,1,1,ligne.length).setValues([ligne]);
       SpreadsheetApp.flush();
     } finally { verrou.releaseLock(); }
-    return reponseIframe_(nonce,true);
+    return reponseIframe_(nonce,true,'');
   } catch(erreur) {
     console.error('Échec du sondage : '+erreur.message);
-    return reponseIframe_(nonce,false);
+    return reponseIframe_(nonce,false,codeErreur_(erreur));
   }
 }
 function validerNom_(valeur) {
@@ -114,20 +118,75 @@ function pourFeuille_(valeur) {
   return /^[=+@-]/.test(valeur)?"'"+valeur:valeur;
 }
 function obtenirClasseur_() {
-  const classeur=SpreadsheetApp.getActiveSpreadsheet();
-  if(!classeur) throw new Error('Créez ce script à partir d’un Google Sheets.');
-  return classeur;
+  // Un script lié à un Google Sheets peut être exécuté sans tableur « actif »
+  // depuis une application Web. L'identifiant est conservé au moment de
+  // l'initialisation pour permettre la connexion côté serveur.
+  const proprietes=PropertiesService.getScriptProperties();
+  const actif=SpreadsheetApp.getActiveSpreadsheet();
+  if(actif) {
+    const id=actif.getId();
+    if(proprietes.getProperty('ORCHID_SPREADSHEET_ID')!==id) {
+      proprietes.setProperty('ORCHID_SPREADSHEET_ID',id);
+    }
+    return actif;
+  }
+  const id=proprietes.getProperty('ORCHID_SPREADSHEET_ID');
+  if(!id) throw new Error('TABLEUR_NON_INITIALISE : exécutez initialiserSondage depuis votre Google Sheets.');
+  return SpreadsheetApp.openById(id);
 }
-function preparerFeuilleReponses_(classeur) {
+
+/**
+ * À exécuter dans Apps Script si un envoi échoue.
+ * Vérifie la structure du tableur sans afficher les noms des familles.
+ */
+function diagnostiquerSondage() {
+  const classeur=obtenirClasseur_();
+  const feuille=classeur.getSheetByName(NOM_FEUILLE_REPONSES);
+  const bilan=classeur.getSheetByName(NOM_FEUILLE_BILAN);
+  if(!feuille) throw new Error('La feuille Réponses est absente : exécutez initialiserSondage.');
+  const colonnes=feuille.getRange(1,1,1,ENTETES.length).getValues()[0];
+  const differences=ENTETES.filter(function(t,i){return colonnes[i]!==t;});
+  if(differences.length) throw new Error('Colonnes incorrectes : exécutez initialiserSondage. Champs concernés : '+differences.join(', '));
+  if(!bilan) throw new Error('La feuille Bilan est absente : exécutez initialiserSondage.');
+  const result='Connexion OK | colonnes conformes | '+Math.max(0,feuille.getLastRow()-1)+' réponse(s) | 6 dates offertes.';
+  console.log(result);
+  return result;
+}
+
+function codeErreur_(erreur) {
+  const message=String(erreur&&erreur.message||'');
+  if(/TABLEUR_NON_INITIALISE|Créez ce script|classeur|spreadsheet/i.test(message)) return 'TABLEUR';
+  if(/Ancien tableau|Ancienne version|colonnes|en-tête/i.test(message)) return 'COLONNES';
+  if(/Date non offerte|Dates invalides|Choix incohérent/i.test(message)) return 'DATES';
+  if(/Nom manquant|Nom invalide|Identifiant invalide|Requête invalide/i.test(message)) return 'VALIDATION';
+  if(/permission|autorisa|accès|access denied/i.test(message)) return 'ACCES';
+  return 'SERVEUR';
+}
+
+function preparerFeuilleReponses_(classeur, autoriserArchivage) {
   let feuille=classeur.getSheetByName(NOM_FEUILLE_REPONSES);
   if(!feuille) feuille=classeur.insertSheet(NOM_FEUILLE_REPONSES);
   if(feuille.getLastRow()>0) {
     const existants=feuille.getRange(1,1,1,Math.min(feuille.getLastColumn(),ENTETES.length)).getValues()[0];
     const conforme=ENTETES.every(function(t,i){return existants[i]===t;});
     if(conforme) return feuille;
-    // Ne jamais mêler les anciennes réponses anonymes et les noms (colonnes différentes).
-    if(feuille.getLastRow()>1) throw new Error('Ancien tableau incompatible : renommez la feuille « Réponses » puis réexécutez initialiserSondage.');
-    feuille.clear();
+
+    // Archive les anciennes colonnes au lieu d'effacer les réponses du premier test.
+    if(feuille.getLastRow()>1) {
+      if(!autoriserArchivage) {
+        throw new Error('Ancienne version détectée : exécutez initialiserSondage depuis Apps Script.');
+      }
+      const date=Utilities.formatDate(new Date(),classeur.getSpreadsheetTimeZone(),'yyyyMMdd-HHmmss');
+      let base='Réponses - archive '+date;
+      let nom=base;
+      let n=2;
+      while(classeur.getSheetByName(nom)) nom=base+'-'+n++;
+      feuille.setName(nom);
+      feuille=classeur.insertSheet(NOM_FEUILLE_REPONSES);
+    } else {
+      // L'ancienne feuille n'avait que les en-têtes et aucune donnée.
+      feuille.clear();
+    }
   }
   feuille.getRange(1,1,1,ENTETES.length).setValues([ENTETES]);
   feuille.getRange(1,1,1,ENTETES.length).setBackground('#245e80').setFontColor('white').setFontWeight('bold');
@@ -136,13 +195,26 @@ function preparerFeuilleReponses_(classeur) {
   feuille.setColumnWidth(3,235);feuille.setColumnWidth(4,235);
   feuille.setColumnWidth(5,120);feuille.setColumnWidth(6,310);
   feuille.getRange('B:B').setNumberFormat('dd mmm yyyy HH:mm:ss');
+  feuille.getRange('E1').setNote('1 = aucun besoin de service; 0 = journées sélectionnées. Ce format numérique évite les erreurs de calcul entre différentes langues de Google Sheets.');
   return feuille;
 }
+
+function normaliserAucunBesoin_(feuille) {
+  // Compatibilité avec les réponses nominatives antérieures : TRUE/FALSE -> 1/0.
+  // Ne touche pas aux noms, identifiants ni aux dates enregistrées.
+  const derniereLigne=feuille.getLastRow();
+  if(derniereLigne<=1) return;
+  const valeurs=feuille.getRange(2,5,derniereLigne-1,1).getValues();
+  valeurs.forEach(function(ligne,index){
+    if(typeof ligne[0]==='boolean') feuille.getRange(index+2,5).setValue(ligne[0]?1:0);
+  });
+}
+
 function lettreColonne_(n) {
   let nom='';while(n>0){n--;nom=String.fromCharCode(65+n%26)+nom;n=Math.floor(n/26);}return nom;
 }
-function reponseIframe_(nonce,ok) {
-  const message=JSON.stringify({type:'orchidbleue-survey-result',nonce:nonce,ok:ok}).replace(/</g,'\\u003c');
+function reponseIframe_(nonce,ok,code) {
+  const message=JSON.stringify({type:'orchidbleue-survey-result',nonce:nonce,ok:ok,code:code||''}).replace(/</g,'\\u003c');
   const html='<!doctype html><html lang="fr"><head><meta charset="utf-8"></head><body>'+
     '<script>window.top.postMessage('+message+',"*");</script></body></html>';
   return HtmlService.createHtmlOutput(html)
