@@ -4,5 +4,5 @@
  * Tant que l’URL est vide, le site reste en mode aperçu (aucune sauvegarde).
  */
 window.ORCHID_CONFIG = {
-  SCRIPT_URL: "https://script.google.com/macros/s/AKfycbwSXh5OxSKv-VMxjkaO4QtLRXfNZdKuJArzMJKXTl61FUtzkJnYadDPfFkCvG1en-Tmpw/exec"
+  SCRIPT_URL: "https://script.google.com/macros/s/AKfycbxyMSuDC8Gy30OwJ7brcG1BpHo1Nj1gdF0WJ2D1_2S3nrwZ39UFbnFZxrHFNY7LkJIotA/exec"
 };
